@@ -1,0 +1,66 @@
+name: Casa Mia Android receiver
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - android-receiver-source.json
+      - .github/workflows/android-receiver.yml
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Restore Android source
+        shell: python
+        run: |
+          import json, pathlib, base64
+          root = pathlib.Path('android-receiver')
+          data = json.loads(pathlib.Path('android-receiver-source.json').read_text())
+          for kind in ('files', 'binary_assets'):
+              for name, value in data[kind].items():
+                  rel = pathlib.PurePosixPath(name)
+                  if rel.is_absolute() or '..' in rel.parts:
+                      raise ValueError('Unsafe source path')
+                  dest = root.joinpath(*rel.parts)
+                  dest.parent.mkdir(parents=True, exist_ok=True)
+                  dest.write_bytes(value.encode() if kind == 'files' else base64.b64decode(value, validate=True))
+      - name: Use installed Android SDK
+        run: |
+          test -n "$ANDROID_HOME"
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+          printf 'sdk.dir=%s\n' "$ANDROID_HOME" > android-receiver/local.properties
+      - name: Verify official Gradle distribution
+        run: |
+          curl --fail --location --retry 2 --max-time 180 https://services.gradle.org/distributions/gradle-8.9-bin.zip -o /tmp/gradle.zip
+          echo 'd725d707bfabd4dfdc958c624003b3c80accc03f7037b5122c4b1d0ef15cecab  /tmp/gradle.zip' | sha256sum --check
+          unzip -q /tmp/gradle.zip -d /tmp
+      - name: Compile, test and lint
+        run: /tmp/gradle-8.9/bin/gradle -p android-receiver --no-daemon assembleDebug testDebugUnitTest lint
+      - name: Verify APK signature and identity
+        run: |
+          mkdir -p deliverable
+          cp android-receiver/app/build/outputs/apk/debug/app-debug.apk deliverable/CasaMia-Comenzi-Test-0.1.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs deliverable/CasaMia-Comenzi-Test-0.1.apk > deliverable/signature.txt
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging deliverable/CasaMia-Comenzi-Test-0.1.apk > deliverable/apk-info.txt
+          cd deliverable
+          sha256sum CasaMia-Comenzi-Test-0.1.apk > SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CasaMia-Comenzi-Android-Test
+          path: deliverable/
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Android-test-and-lint-reports
+          path: |
+            android-receiver/app/build/reports/
+            android-receiver/app/build/test-results/
+          retention-days: 30
