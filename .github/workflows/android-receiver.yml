@@ -4,7 +4,6 @@ on:
   push:
     paths:
       - android-receiver-source.json
-      - .github/workflows/android-receiver.yml
 permissions:
   contents: read
 jobs:
@@ -39,7 +38,7 @@ jobs:
           import json,pathlib
           source=json.loads(pathlib.Path('launch-preparation.json').read_text())['files']
           for name,value in source.items():
-              if not (name.startswith('server/') or name in ('tests/api_integration.py','tests/mobile_integration.py','scripts/php-local.sh')):
+              if not (name.startswith('server/') or name in ('tests/api_integration.py','tests/mobile_integration.py','tests/supervision_integration.py','scripts/php-local.sh')):
                   continue
               rel=pathlib.PurePosixPath(name)
               if rel.is_absolute() or '..' in rel.parts:
@@ -52,6 +51,7 @@ jobs:
           php -r 'exit(extension_loaded("pdo_sqlite") && extension_loaded("mbstring") ? 0 : 1);'
           python3 backend-checks/tests/api_integration.py
           python3 backend-checks/tests/mobile_integration.py
+          python3 backend-checks/tests/supervision_integration.py
       - name: Use installed Android SDK
         run: |
           test -n "$ANDROID_HOME"
@@ -63,19 +63,28 @@ jobs:
           curl --fail --location --retry 2 --max-time 180 https://services.gradle.org/distributions/gradle-8.9-bin.zip -o /tmp/gradle.zip
           echo 'd725d707bfabd4dfdc958c624003b3c80accc03f7037b5122c4b1d0ef15cecab  /tmp/gradle.zip' | sha256sum --check
           unzip -q /tmp/gradle.zip -d /tmp
-      - name: Compile, test and lint
-        run: /tmp/gradle-8.9/bin/gradle -p android-receiver --no-daemon assembleDebug testDebugUnitTest lint
-      - name: Verify APK signature and identity
+      - name: Compile, test and lint both apps
+        run: /tmp/gradle-8.9/bin/gradle -p android-receiver --no-daemon :app:assembleDebug :supervisor:assembleDebug :app:testDebugUnitTest :supervisor:testDebugUnitTest :app:lint :supervisor:lint
+      - name: Verify both APK signatures and identities
         run: |
           mkdir -p deliverable
-          cp android-receiver/app/build/outputs/apk/debug/app-debug.apk deliverable/CasaMia-Comenzi-Test-0.2.apk
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs deliverable/CasaMia-Comenzi-Test-0.2.apk > deliverable/signature.txt
-          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging deliverable/CasaMia-Comenzi-Test-0.2.apk > deliverable/apk-info.txt
+          cp android-receiver/app/build/outputs/apk/debug/app-debug.apk deliverable/CasaMia-Comenzi-Test-0.4.apk
+          cp android-receiver/supervisor/build/outputs/apk/debug/supervisor-debug.apk deliverable/CasaMia-Vision-Test-0.1.apk
+          for app in Comenzi-Test-0.4 Vision-Test-0.1; do
+            "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "deliverable/CasaMia-$app.apk" > "deliverable/signature-$app.txt"
+            "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "deliverable/CasaMia-$app.apk" > "deliverable/info-$app.txt"
+          done
+          python3 - <<'PYTHON'
+          import pathlib,re
+          root=pathlib.Path('deliverable')
+          certificates=[re.search(r'certificate SHA-256 digest: ([a-f0-9]+)',p.read_text())[1] for p in root.glob('signature-*.txt')]
+          assert len(certificates)==2 and len(set(certificates))==1,'Demo companion must have the same signing identity'
+          PYTHON
           cd deliverable
-          sha256sum CasaMia-Comenzi-Test-0.2.apk > SHA256.txt
+          sha256sum *.apk > SHA256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: CasaMia-Comenzi-Android-Test
+          name: CasaMia-Android-Pair-Test
           path: deliverable/
           retention-days: 30
       - uses: actions/upload-artifact@v4
@@ -85,4 +94,6 @@ jobs:
           path: |
             android-receiver/app/build/reports/
             android-receiver/app/build/test-results/
+            android-receiver/supervisor/build/reports/
+            android-receiver/supervisor/build/test-results/
           retention-days: 30
